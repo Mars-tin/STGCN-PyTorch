@@ -10,7 +10,7 @@ from stgcn import STGCN
 from utils import generate_dataset, load_metr_la_data, get_normalized_adj
 
 
-use_gpu = False
+use_gpu = True
 num_timesteps_input = 12
 num_timesteps_output = 3
 
@@ -26,6 +26,9 @@ if args.enable_cuda and torch.cuda.is_available():
     args.device = torch.device('cuda')
 else:
     args.device = torch.device('cpu')
+print(args.enable_cuda)
+print(torch.cuda.is_available())
+print(args.device)
 
 
 def train_epoch(training_input, training_target, batch_size):
@@ -55,6 +58,7 @@ def train_epoch(training_input, training_target, batch_size):
         loss.backward()
         optimizer.step()
         epoch_training_losses.append(loss.detach().cpu().numpy())
+    print("Flag")
     return sum(epoch_training_losses)/len(epoch_training_losses)
 
 
@@ -106,15 +110,27 @@ if __name__ == '__main__':
             net.eval()
             val_input = val_input.to(device=args.device)
             val_target = val_target.to(device=args.device)
+            permutation = torch.randperm(training_input.shape[0])
 
-            out = net(A_wave, val_input)
-            val_loss = loss_criterion(out, val_target).to(device="cpu")
-            validation_losses.append(np.asscalar(val_loss.detach().numpy()))
+            val_loss_batch = []
+            mae_batch = []
+            for i in range(0, training_input.shape[0], batch_size):
+                indices = permutation[i:i + batch_size]
+                X_batch, y_batch = training_input[indices], training_target[indices]
+                X_batch = X_batch.to(device=args.device)
+                y_batch = y_batch.to(device=args.device)
 
-            out_unnormalized = out.detach().cpu().numpy()*stds[0]+means[0]
-            target_unnormalized = val_target.detach().cpu().numpy()*stds[0]+means[0]
-            mae = np.mean(np.absolute(out_unnormalized - target_unnormalized))
-            validation_maes.append(mae)
+                out = net(A_wave, X_batch)
+                val_loss = loss_criterion(out, y_batch).to(device="cpu")
+                val_loss_batch.append(np.asscalar(val_loss.detach().numpy()))
+
+                out_unnormalized = out.detach().cpu().numpy()*stds[0]+means[0]
+                target_unnormalized = y_batch.detach().cpu().numpy()*stds[0]+means[0]
+                mae = np.mean(np.absolute(out_unnormalized - target_unnormalized))
+                mae_batch.append(mae)
+
+            validation_losses.append(np.mean(val_loss_batch))
+            validation_maes.append(np.mean(mae_batch))
 
             out = None
             val_input = val_input.to(device="cpu")
