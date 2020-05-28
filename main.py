@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from stgcn import STGCN
+from GaussianCopula import CopulaLoss
 from utils import generate_dataset, load_metr_la_data, get_normalized_adj
 
 
@@ -14,7 +15,9 @@ use_gpu = True
 num_timesteps_input = 12
 num_timesteps_output = 3
 
+seed = 7
 epochs = 1000
+patience = 30
 batch_size = 50
 
 parser = argparse.ArgumentParser(description='STGCN')
@@ -58,12 +61,11 @@ def train_epoch(training_input, training_target, batch_size):
         loss.backward()
         optimizer.step()
         epoch_training_losses.append(loss.detach().cpu().numpy())
-    print("Flag")
     return sum(epoch_training_losses)/len(epoch_training_losses)
 
 
 if __name__ == '__main__':
-    torch.manual_seed(7)
+    torch.manual_seed(seed)
 
     A, X, means, stds = load_metr_la_data()
 
@@ -95,12 +97,27 @@ if __name__ == '__main__':
                 num_timesteps_output).to(device=args.device)
 
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
-    loss_criterion = nn.MSELoss()
+    loss_criterion = CopulaLoss()
 
     training_losses = []
     validation_losses = []
     validation_maes = []
+
+    plt.ion()
+    fig, axes = plt.subplots(1, figsize=(10, 5))
+    plt.suptitle('STGCN Training')
+    axes.set_xlabel('Epoch')
+    axes.set_ylabel('Loss')
+
+    rem = patience
+    idx = 0
+    best_loss = float('inf')
+
     for epoch in range(epochs):
+        # Early stop
+        if patience < 0:
+            break
+
         loss = train_epoch(training_input, training_target,
                            batch_size=batch_size)
         training_losses.append(loss)
@@ -122,7 +139,7 @@ if __name__ == '__main__':
 
                 out = net(A_wave, X_batch)
                 val_loss = loss_criterion(out, y_batch).to(device="cpu")
-                val_loss_batch.append(np.asscalar(val_loss.detach().numpy()))
+                val_loss_batch.append(val_loss.detach().numpy().item())
 
                 out_unnormalized = out.detach().cpu().numpy()*stds[0]+means[0]
                 target_unnormalized = y_batch.detach().cpu().numpy()*stds[0]+means[0]
@@ -136,16 +153,32 @@ if __name__ == '__main__':
             val_input = val_input.to(device="cpu")
             val_target = val_target.to(device="cpu")
 
+        print("\nEpoch: {}".format(epoch))
         print("Training loss: {}".format(training_losses[-1]))
         print("Validation loss: {}".format(validation_losses[-1]))
         print("Validation MAE: {}".format(validation_maes[-1]))
-        plt.plot(training_losses, label="training loss")
-        plt.plot(validation_losses, label="validation loss")
-        plt.legend()
-        plt.show()
 
         checkpoint_path = "checkpoints/"
         if not os.path.exists(checkpoint_path):
             os.makedirs(checkpoint_path)
         with open("checkpoints/losses.pk", "wb") as fd:
             pk.dump((training_losses, validation_losses, validation_maes), fd)
+
+        valid_loss = validation_losses[-1]
+        if valid_loss < best_loss:
+            rem = patience
+            best_loss = valid_loss
+            idx = epoch
+
+        rem -= 1
+
+    print("\nThe MSE loss on test dataset is:", validation_losses[idx])
+    print("The MAE on test dataset is:", validation_maes[idx])
+    print("This is obtained in epoch", idx)
+
+    plt.plot(training_losses, label="training loss")
+    plt.plot(validation_losses, label="validation loss")
+    plt.plot(validation_maes, label="validation MAE")
+    plt.legend()
+    fig.savefig("STGCN_training_{}".format(seed), dpi=200)
+    plt.show()
